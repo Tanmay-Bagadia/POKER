@@ -1,0 +1,21 @@
+{
+  "name": "royal-flush-server",
+  "version": "1.0.0",
+  "description": "Royal Flush — Multiplayer Poker Backend (Express + Socket.IO)",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["poker", "multiplayer", "socket.io", "game-server"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "uuid": "^11.1.0"
+  }
+}

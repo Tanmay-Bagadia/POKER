@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Royal Flush — A premium multiplayer Texas Hold'em poker experience with stunning glassmorphic aesthetics and real-time gameplay." />
+  <meta name="theme-color" content="#0a0e17" />
+
+  <title>Royal Flush — Multiplayer Poker</title>
+
+  <!-- Preload Critical Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+</head>
+<body>
+  <!-- Application Root -->
+  <div id="app">
+    <!-- Dynamic content rendered by main.js -->
+    <div id="loading-screen" class="loading-screen">
+      <div class="loading-screen__inner">
+        <div class="loading-screen__logo">
+          <span class="loading-screen__suit">♠</span>
+          <span class="loading-screen__suit loading-screen__suit--red">♥</span>
+          <span class="loading-screen__suit">♣</span>
+          <span class="loading-screen__suit loading-screen__suit--red">♦</span>
+        </div>
+        <h1 class="loading-screen__title">Royal Flush</h1>
+        <p class="loading-screen__subtitle">Loading the table...</p>
+        <div class="loading-screen__bar">
+          <div class="loading-screen__bar-fill" id="loading-bar-fill"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
