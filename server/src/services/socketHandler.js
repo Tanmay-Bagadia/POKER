@@ -1,91 +1,111 @@
 /* ============================================================
-   ROYAL FLUSH — Socket.IO Event Handler
+   ROYAL FLUSH — Socket Event Handler (Complete)
    
-   Handles all real-time WebSocket events.
-   Manages player connections, room operations, and game actions.
+   Handles all real-time communication:
+   - Connection/disconnection
+   - Lobby management
+   - Room CRUD
+   - Player name setting
+   - Game actions (start, bet, fold, etc.)
    ============================================================ */
 
-import { SOCKET_EVENTS } from '../config/constants.js';
+import { SOCKET_EVENTS, PLAYER_ACTIONS } from '../config/constants.js';
 import { Player } from '../models/Player.js';
-import roomService from '../services/RoomService.js';
+import RoomService from './RoomService.js';
+import { GameEngine } from '../engine/GameEngine.js';
 import Logger from '../utils/logger.js';
 
 const log = new Logger('SocketHandler');
 
-/** @type {Map<string, Player>} Socket ID → Player lookup */
+/** @type {Map<string, Player>} socketId → Player */
 const connectedPlayers = new Map();
 
+/** @type {Map<string, GameEngine>} roomId → GameEngine */
+const gameEngines = new Map();
+
+/** @type {Set<string>} socketIds in the lobby */
+const lobbyMembers = new Set();
+
 /**
- * Initialize Socket.IO event handlers
- * @param {import('socket.io').Server} io - Socket.IO server instance
+ * Initialize socket event handlers
+ * @param {import('socket.io').Server} io
  */
 export function initSocketHandlers(io) {
-  io.on(SOCKET_EVENTS.CONNECT, (socket) => {
+  io.on('connection', (socket) => {
     log.socket(`Client connected: ${socket.id}`);
 
-    // Create a player for this connection
+    // Create a Player object for this connection
     const player = new Player(socket.id);
     connectedPlayers.set(socket.id, player);
 
-    // ── Player Name ──────────────────────────────────
+    /* ─── Player Identity ──────────────────────────── */
+
     socket.on(SOCKET_EVENTS.PLAYER_SET_NAME, (name, callback) => {
-      if (!name || typeof name !== 'string' || name.trim().length < 1) {
-        return callback?.({ success: false, error: 'Invalid name.' });
+      if (!name || typeof name !== 'string' || name.trim().length < 2) {
+        return callback?.({ success: false, error: 'Name must be at least 2 characters.' });
       }
 
-      player.name = name.trim().slice(0, 20); // Max 20 chars
-      log.info(`Player "${player.name}" set name (${player.id})`);
-      callback?.({ success: true, playerId: player.id, name: player.name });
+      player.name = name.trim().slice(0, 20);
+      log.info(`Player named: ${player.name} (${socket.id})`);
+
+      callback?.({
+        success: true,
+        playerId: player.id,
+        name: player.name,
+      });
     });
 
-    // ── Lobby ────────────────────────────────────────
-    socket.on(SOCKET_EVENTS.LOBBY_JOIN, (callback) => {
+    /* ─── Lobby ────────────────────────────────────── */
+
+    socket.on(SOCKET_EVENTS.LOBBY_JOIN, (_, callback) => {
       socket.join('lobby');
-      const rooms = roomService.getPublicRooms();
+      lobbyMembers.add(socket.id);
+
+      const rooms = RoomService.getAllRooms().map(r => r.toLobby());
       callback?.({ success: true, rooms });
-      log.socket(`${player.name} joined lobby`);
+
+      broadcastLobbyUpdate(io);
+      log.info(`${player.name} joined lobby.`);
     });
 
     socket.on(SOCKET_EVENTS.LOBBY_LEAVE, () => {
       socket.leave('lobby');
+      lobbyMembers.delete(socket.id);
+      log.info(`${player.name} left lobby.`);
     });
 
-    // ── Room Create ──────────────────────────────────
+    /* ─── Room Management ──────────────────────────── */
+
     socket.on(SOCKET_EVENTS.ROOM_CREATE, (data, callback) => {
-      const { name, maxPlayers, smallBlind, bigBlind } = data || {};
-
-      if (!name || typeof name !== 'string' || name.trim().length < 1) {
-        return callback?.({ success: false, error: 'Room name is required.' });
-      }
-
-      const room = roomService.createRoom(name.trim(), player.id, {
-        maxPlayers,
-        smallBlind,
-        bigBlind,
-      });
-
-      // Add creator to the room
-      room.addPlayer(player);
-      roomService.setPlayerRoom(player.id, room.id);
-      socket.join(room.id);
+      // Leave lobby
       socket.leave('lobby');
+      lobbyMembers.delete(socket.id);
 
-      // Broadcast updated room list to lobby
-      io.to('lobby').emit(SOCKET_EVENTS.LOBBY_ROOMS_UPDATE, roomService.getPublicRooms());
+      const room = RoomService.createRoom(
+        data.name || `${player.name}'s Table`,
+        player.id,
+        {
+          maxPlayers: Math.min(Math.max(data.maxPlayers || 9, 2), 9),
+          smallBlind: data.smallBlind || 10,
+          bigBlind: data.bigBlind || 20,
+        }
+      );
+
+      // Add the host player to the room
+      room.addPlayer(player);
+      socket.join(room.id);
 
       callback?.({
         success: true,
         room: room.toState(),
-        playerId: player.id,
       });
 
-      log.info(`Room "${room.name}" created by ${player.name}`);
+      broadcastLobbyUpdate(io);
+      log.info(`${player.name} created room "${room.name}" (${room.id})`);
     });
 
-    // ── Room Join ────────────────────────────────────
     socket.on(SOCKET_EVENTS.ROOM_JOIN, (roomId, callback) => {
-      const room = roomService.getRoom(roomId);
-
+      const room = RoomService.getRoom(roomId);
       if (!room) {
         return callback?.({ success: false, error: 'Room not found.' });
       }
@@ -94,108 +114,172 @@ export function initSocketHandlers(io) {
         return callback?.({ success: false, error: 'Room is full.' });
       }
 
-      const added = room.addPlayer(player);
-      if (!added) {
-        return callback?.({ success: false, error: 'Could not join room.' });
-      }
-
-      roomService.setPlayerRoom(player.id, room.id);
-      socket.join(room.id);
+      // Leave lobby
       socket.leave('lobby');
+      lobbyMembers.delete(socket.id);
 
-      // Notify other players in the room
+      room.addPlayer(player);
+      socket.join(room.id);
+
+      callback?.({
+        success: true,
+        room: room.toState(),
+      });
+
+      // Notify room members
       socket.to(room.id).emit(SOCKET_EVENTS.ROOM_PLAYER_JOINED, {
         player: player.toPublic(),
         room: room.toState(),
       });
 
-      // Update lobby
-      io.to('lobby').emit(SOCKET_EVENTS.LOBBY_ROOMS_UPDATE, roomService.getPublicRooms());
-
-      callback?.({
-        success: true,
-        room: room.toState(),
-        playerId: player.id,
-      });
-
+      broadcastLobbyUpdate(io);
       log.info(`${player.name} joined room "${room.name}"`);
     });
 
-    // ── Room Leave ───────────────────────────────────
-    socket.on(SOCKET_EVENTS.ROOM_LEAVE, (callback) => {
+    socket.on(SOCKET_EVENTS.ROOM_LEAVE, (_, callback) => {
       handlePlayerLeaveRoom(socket, player, io);
       callback?.({ success: true });
     });
 
-    // ── Chat ─────────────────────────────────────────
     socket.on(SOCKET_EVENTS.ROOM_CHAT, (message) => {
-      if (!player.roomId || !message || typeof message !== 'string') return;
-
-      const sanitized = message.trim().slice(0, 200);
-      if (sanitized.length === 0) return;
-
+      if (!player.roomId || !message) return;
       io.to(player.roomId).emit(SOCKET_EVENTS.ROOM_CHAT, {
         playerId: player.id,
         playerName: player.name,
-        message: sanitized,
+        message: message.slice(0, 200),
         timestamp: Date.now(),
       });
     });
 
-    // ── Disconnect ───────────────────────────────────
-    socket.on(SOCKET_EVENTS.DISCONNECT, (reason) => {
+    // Request current room state
+    socket.on(SOCKET_EVENTS.ROOM_UPDATE, (_, callback) => {
+      const room = RoomService.getRoom(player.roomId);
+      if (!room) return callback?.(null);
+      callback?.(room.toState());
+    });
+
+    /* ─── Game Actions ─────────────────────────────── */
+
+    socket.on(SOCKET_EVENTS.GAME_START, (_, callback) => {
+      const room = RoomService.getRoom(player.roomId);
+      if (!room) return callback?.({ success: false, error: 'Not in a room.' });
+      if (player.id !== room.hostId) return callback?.({ success: false, error: 'Only the host can start the game.' });
+      if (!room.canStartGame()) return callback?.({ success: false, error: 'Not enough players to start.' });
+
+      // Create or reuse game engine
+      let engine = gameEngines.get(room.id);
+      if (!engine) {
+        engine = new GameEngine(
+          room,
+          (roomId, event, data) => io.to(roomId).emit(event, data),
+          (socketId, event, data) => io.to(socketId).emit(event, data),
+        );
+        gameEngines.set(room.id, engine);
+      }
+
+      const started = engine.startRound();
+      callback?.({ success: started, error: started ? null : 'Failed to start round.' });
+    });
+
+    // Unified game action handler
+    socket.on('game:action', (data, callback) => {
+      const { action, amount } = data || {};
+      const room = RoomService.getRoom(player.roomId);
+      if (!room) return callback?.({ success: false, error: 'Not in a room.' });
+
+      const engine = gameEngines.get(room.id);
+      if (!engine) return callback?.({ success: false, error: 'Game not started.' });
+
+      const result = engine.handleAction(player.id, action, amount);
+      callback?.(result);
+    });
+
+    // Individual action events (convenience — map to unified handler)
+    socket.on(SOCKET_EVENTS.GAME_ACTION_FOLD, (_, cb) => {
+      socket.emit('game:action', { action: PLAYER_ACTIONS.FOLD }, cb);
+    });
+    socket.on(SOCKET_EVENTS.GAME_ACTION_CHECK, (_, cb) => {
+      socket.emit('game:action', { action: PLAYER_ACTIONS.CHECK }, cb);
+    });
+    socket.on(SOCKET_EVENTS.GAME_ACTION_CALL, (_, cb) => {
+      socket.emit('game:action', { action: PLAYER_ACTIONS.CALL }, cb);
+    });
+    socket.on(SOCKET_EVENTS.GAME_ACTION_BET, (data, cb) => {
+      socket.emit('game:action', { action: PLAYER_ACTIONS.BET, amount: data?.amount }, cb);
+    });
+    socket.on(SOCKET_EVENTS.GAME_ACTION_RAISE, (data, cb) => {
+      socket.emit('game:action', { action: PLAYER_ACTIONS.RAISE, amount: data?.amount }, cb);
+    });
+    socket.on(SOCKET_EVENTS.GAME_ACTION_ALL_IN, (_, cb) => {
+      socket.emit('game:action', { action: PLAYER_ACTIONS.ALL_IN }, cb);
+    });
+
+    /* ─── Disconnect ───────────────────────────────── */
+
+    socket.on('disconnect', (reason) => {
       log.socket(`Client disconnected: ${socket.id} (${reason})`);
+
+      // Handle room cleanup
       handlePlayerLeaveRoom(socket, player, io);
+
+      // Remove from lobby
+      lobbyMembers.delete(socket.id);
+
+      // Remove player record
       connectedPlayers.delete(socket.id);
     });
   });
 
-  // Log connection count periodically
+  // Periodic status logging
   setInterval(() => {
-    log.debug(`Connected: ${connectedPlayers.size} players | ${roomService.count} rooms`);
+    log.debug(`Connected: ${connectedPlayers.size} players | ${RoomService.getAllRooms().length} rooms`);
   }, 30000);
 
   log.info('Socket handlers initialized.');
 }
 
-/**
- * Handle a player leaving their current room
- * @param {import('socket.io').Socket} socket
- * @param {Player} player
- * @param {import('socket.io').Server} io
- */
+/* ─── Helpers ──────────────────────────────────────────── */
+
 function handlePlayerLeaveRoom(socket, player, io) {
   if (!player.roomId) return;
 
-  const room = roomService.getRoom(player.roomId);
+  const room = RoomService.getRoom(player.roomId);
   if (!room) return;
 
+  const roomId = room.id;
+
+  // If a game is running, fold the player
+  const engine = gameEngines.get(roomId);
+  if (engine && engine.roundActive) {
+    engine.handleAction(player.id, PLAYER_ACTIONS.FOLD);
+  }
+
   room.removePlayer(player.id);
-  roomService.removePlayerRoom(player.id);
-  socket.leave(room.id);
+  socket.leave(roomId);
+  player.roomId = null;
 
   // Notify remaining players
-  socket.to(room.id).emit(SOCKET_EVENTS.ROOM_PLAYER_LEFT, {
+  io.to(roomId).emit(SOCKET_EVENTS.ROOM_PLAYER_LEFT, {
     playerId: player.id,
     playerName: player.name,
     room: room.toState(),
   });
 
-  // Delete empty rooms
+  // Destroy room if empty
   if (room.isEmpty()) {
-    roomService.deleteRoom(room.id);
+    if (engine) {
+      engine.destroy();
+      gameEngines.delete(roomId);
+    }
+    RoomService.deleteRoom(roomId);
+    log.info(`Room "${room.name}" destroyed (empty).`);
   }
 
-  // Update lobby
-  io.to('lobby').emit(SOCKET_EVENTS.LOBBY_ROOMS_UPDATE, roomService.getPublicRooms());
-
+  broadcastLobbyUpdate(io);
   log.info(`${player.name} left room "${room.name}"`);
 }
 
-/**
- * Get connected player count
- * @returns {number}
- */
-export function getConnectedPlayerCount() {
-  return connectedPlayers.size;
+function broadcastLobbyUpdate(io) {
+  const rooms = RoomService.getAllRooms().map(r => r.toLobby());
+  io.to('lobby').emit(SOCKET_EVENTS.LOBBY_ROOMS_UPDATE, rooms);
 }

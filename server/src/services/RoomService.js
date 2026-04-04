@@ -43,6 +43,14 @@ class RoomService {
   }
 
   /**
+   * Get all rooms
+   * @returns {Room[]}
+   */
+  getAllRooms() {
+    return Array.from(this.rooms.values());
+  }
+
+  /**
    * Get all public rooms for the lobby
    * @returns {Object[]}
    */
