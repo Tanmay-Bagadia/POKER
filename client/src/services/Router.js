@@ -7,6 +7,9 @@
 
 import { ROUTES } from '../utils/constants.js';
 import { clearChildren } from '../utils/dom.js';
+import { LandingView } from '../components/views/LandingView.js';
+import { LobbyView } from '../components/views/LobbyView.js';
+import { TableView } from '../components/views/TableView.js';
 
 /**
  * Router
@@ -27,6 +30,9 @@ export class Router {
 
     /** @type {Object} */
     this.services = services;
+
+    // Make router accessible to views via services
+    this.services.router = this;
 
     /** @type {string} */
     this.currentRoute = null;
@@ -54,10 +60,10 @@ export class Router {
     // Listen for hash changes
     window.addEventListener('hashchange', () => this.handleRouteChange());
 
-    // Register route placeholders (views will be registered by each phase)
-    this.registerRoute(ROUTES.LANDING, null);
-    this.registerRoute(ROUTES.LOBBY, null);
-    this.registerRoute(ROUTES.TABLE, null);
+    // Register views
+    this.registerRoute(ROUTES.LANDING, LandingView);
+    this.registerRoute(ROUTES.LOBBY, LobbyView);
+    this.registerRoute(ROUTES.TABLE, TableView);
 
     // Navigate to current hash or default
     await this.handleRouteChange();
